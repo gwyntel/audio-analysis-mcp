@@ -395,22 +395,55 @@ async def analyze_audio(
     clip_seconds: int = CLIP_SECONDS,
     backend: str = BACKEND,
 ) -> dict:
-    """Split audio into clips, analyze each, return combined results.
+    """Analyze an audio file — whole-file for cloud backends, clipped for local.
 
-    Best for files longer than 30s — splits into clip_seconds chunks,
-    sends each to the selected backend for analysis, returns per-clip
-    results and a combined summary.
+    Cloud backends (gemini-flash, google) receive the entire file — no splitting.
+    Local backends (swiftlm, omlx-stt, openai) split into clip_seconds chunks
+    because they have hard audio context limits (e.g. Gemma 4 = 30s / 750 tokens).
 
     Args:
         audio_path: Path to audio file
-        prompt: Question about the audio (applied to each clip)
+        prompt: Question about the audio
         model: Model name
-        clip_seconds: Seconds per clip (default 30)
+        clip_seconds: Seconds per clip for local backends only (default 30)
         backend: 'swiftlm', 'gemini-flash', 'google', 'omlx-stt', or 'openai'
 
     Returns:
         Dict with total_clips, per-clip analyses, and combined text
     """
+    duration = _probe_duration(audio_path)
+    cloud_backends = {"gemini-flash", "google"}
+
+    # Cloud backends: send the whole file, no splitting needed
+    if backend in cloud_backends:
+        max_retries = 3
+        analysis = ""
+        for attempt in range(max_retries + 1):
+            try:
+                analysis = await _analyze_single_clip(audio_path, prompt, model, backend)
+                break
+            except Exception as exc:
+                err_str = str(exc)
+                if "429" in err_str and attempt < max_retries:
+                    # Parse retry delay from error
+                    import re as _re
+                    delay_match = _re.search(r"retry.*?(\d+)s", err_str, _re.IGNORECASE)
+                    delay = int(delay_match.group(1)) + 2 if delay_match else 60
+                    print(f"Rate limited, retrying in {delay}s (attempt {attempt+1}/{max_retries})")
+                    await asyncio.sleep(delay)
+                else:
+                    analysis = f"[ERROR: {exc}]"
+                    break
+        return {
+            "total_clips": 1,
+            "clip_seconds": round(duration, 2),
+            "model": model,
+            "backend": backend,
+            "analyses": [{"clip_index": 0, "offset_seconds": 0, "analysis": analysis}],
+            "combined": analysis,
+        }
+
+    # Local backends: split into clips
     clip_paths = _split_audio(audio_path, clip_seconds)
     sem = asyncio.Semaphore(1 if backend == "swiftlm" else 3)
 
