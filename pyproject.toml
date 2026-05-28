@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemma4-audio-mcp"
+version = "1.0.0"
+description = "MCP server for audio analysis using Gemma 4 with local Apple Silicon inference"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    {name = "gwyntel"},
+]
+keywords = ["mcp", "gemma4", "audio", "mlx", "apple-silicon"]
+dependencies = [
+    "fastmcp>=2.0",
+    "google-genai>=1.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+gemma4-audio-mcp = "gemma4_audio.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
