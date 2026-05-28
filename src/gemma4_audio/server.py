@@ -56,6 +56,10 @@ def _get_omlx_key():
     return os.environ.get("GEMMA4_AUDIO_OMLX_API_KEY", "donthackme")
 
 def _get_google_key():
+    # Try GEMMA4_AUDIO_GOOGLE_API_KEY first (avoids masking), then GOOGLE_API_KEY
+    val = os.environ.get("GEMMA4_AUDIO_GOOGLE_API_KEY", "")
+    if val:
+        return val
     return os.environ.get("GOOGLE_API_KEY", "")
 
 # ------------------------------------------------------------------------------
@@ -63,12 +67,14 @@ def _get_google_key():
 mcp = FastMCP(
     name="gemma4-audio",
     instructions=(
-        "Audio analysis powered by Gemma 4. "
+        "Audio analysis powered by Gemma 4 and Gemini. "
         "Use analyze_audio to split a file into 30s clips and analyze each. "
         "Use analyze_clip to analyze a single audio segment. "
         "Use split_audio to just split without analysis. "
-        "Backends: 'swiftlm' (native audio tower on Apple Silicon, best), "
-        "'google' (AI Studio native audio), "
+        "Backends: 'swiftlm' (native audio tower on Apple Silicon), "
+        "'gemini-flash' (Gemini 3.5 Flash with thinking, cloud), "
+        "'gemma4-cloud' (Gemini 2.5 Flash native audio on AI Studio), "
+        "'google' (any AI Studio model, specify model name), "
         "'omlx-stt' (transcription only), "
         "'openai' (text-only fallback)."
     ),
@@ -198,13 +204,19 @@ def _parse_cli_output(stdout: str) -> str:
 # --- Backend: Google AI Studio (native audio) --------------------------------
 
 async def _analyze_google(clip_path: str, prompt: str, model: str) -> str:
-    """Analyze audio via Google AI Studio with native Gemma 4 audio support."""
+    """Analyze audio via Google AI Studio (Gemma 4, Gemini, any multimodal model).
+
+    Supports all models with audio capability on AI Studio:
+      - gemma-4-31b-it, gemma-4-26b-a4b-it (native Gemma 4 audio)
+      - gemini-3.5-flash (with thinking)
+      - gemini-2.5-flash-native-audio-latest (native audio output)
+    """
     from google import genai
     from google.genai import types
 
     key = _get_google_key()
     if not key:
-        raise ValueError("GOOGLE_API_KEY env var required for google backend")
+        raise ValueError("GOOGLE_API_KEY or GEMMA4_AUDIO_GOOGLE_API_KEY env var required for google/gemini/gemma4-cloud backends")
 
     audio_bytes = Path(clip_path).read_bytes()
     ext = Path(clip_path).suffix.lower()
@@ -216,6 +228,12 @@ async def _analyze_google(clip_path: str, prompt: str, model: str) -> str:
 
     def _call() -> str:
         client = genai.Client(api_key=key)
+
+        # Build config — enable thinking for Gemini models
+        config = types.GenerateContentConfig()
+        if "gemini" in model.lower():
+            config.thinking_config = types.ThinkingConfig(thinking_budget=10000)
+
         response = client.models.generate_content(
             model=model,
             contents=[
@@ -224,6 +242,7 @@ async def _analyze_google(clip_path: str, prompt: str, model: str) -> str:
                     types.Part(text=prompt),
                 ]),
             ],
+            config=config,
         )
         return response.text or ""
 
@@ -313,6 +332,11 @@ async def _analyze_single_clip(
     if backend == "openai":
         chat_model = os.environ.get("GEMMA4_AUDIO_OMLX_CHAT_MODEL", "gemma-4-E4B-it")
         return await _analyze_openai(clip_path, prompt, chat_model)
+    if backend == "gemini-flash":
+        return await _analyze_google(clip_path, prompt, "gemini-3.5-flash")
+    if backend == "gemma4-cloud":
+        return await _analyze_google(clip_path, prompt, "gemini-3.5-flash")
+    # Default: google backend with specified model
     return await _analyze_google(clip_path, prompt, model)
 
 
@@ -352,8 +376,11 @@ async def analyze_clip(
         audio_path: Path to audio file (wav, mp3, m4a, flac, etc.)
         prompt: Question or instruction about the audio
         model: Model name (default: gemma-4-e4b-it)
-        backend: Analysis backend — 'swiftlm' (native audio, best),
-                 'google' (AI Studio), 'omlx-stt' (transcription only),
+        backend: Analysis backend — 'swiftlm' (native audio, local),
+                 'gemini-flash' (Gemini 3.5 Flash with thinking, cloud),
+                 'gemma4-cloud' (Gemini 2.5 Flash native audio on AI Studio),
+                 'google' (any AI Studio model via model param),
+                 'omlx-stt' (transcription only),
                  'openai' (metadata-only fallback)
 
     Returns:
