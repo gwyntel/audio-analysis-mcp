@@ -26,6 +26,22 @@ from pathlib import Path
 import httpx
 from fastmcp import FastMCP
 
+# --- Dotenv -------------------------------------------------------------------
+# Load .env from project dir, ~/.env, or CWD — checked in order, first wins.
+# This lets you keep API keys out of claude_desktop_config.json.
+try:
+    from dotenv import load_dotenv
+    for _p in [
+        Path(__file__).resolve().parents[2] / ".env",  # project root
+        Path.home() / ".env",
+        Path.cwd() / ".env",
+    ]:
+        if _p.exists():
+            load_dotenv(_p)
+            break
+except ImportError:
+    pass
+
 # --- Config -------------------------------------------------------------------
 
 DEFAULT_MODEL = os.environ.get("AUDIO_ANALYSIS_MODEL", "gemma-4-e4b-it")
