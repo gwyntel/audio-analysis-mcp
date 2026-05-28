@@ -445,6 +445,174 @@ async def analyze_audio(
     }
 
 
+# --- MCP Resources: Suggested Prompts ----------------------------------------
+
+PROMPT_CATEGORIES = {
+    "genre-classification": {
+        "name": "Genre & Style Classification",
+        "prompts": [
+            "What genre of music is this? Be specific about subgenres.",
+            "Classify this track's genre and list the musical traditions it draws from.",
+            "What era or decade does this music sound like it's from? What gives it away?",
+            "Is this more [genre A] or [genre B]? Explain the hybrid elements.",
+            "What scene or movement does this track belong to?",
+        ],
+    },
+    "instrumentation": {
+        "name": "Instruments & Sound Sources",
+        "prompts": [
+            "List every instrument and sound source you can identify in this clip.",
+            "Is that a real [instrument] or a synthesizer imitating one? How can you tell?",
+            "What's creating that [description] sound around [timestamp]?",
+            "Describe the bass tone — is it synthetic, sampled, or played live?",
+            "How many layers of sound can you count? Describe each.",
+        ],
+    },
+    "production": {
+        "name": "Production & Engineering",
+        "prompts": [
+            "Describe the production style — compression, reverb, stereo width, distortion.",
+            "How would you recreate this sound? What effects chains are on the vocals?",
+            "Is this mixed for headphones, club PA, or radio? What tells you?",
+            "Rate the loudness and dynamic range. Is it crushed or breathing?",
+            "What production techniques define this track's sound?",
+        ],
+    },
+    "vocals": {
+        "name": "Vocal Analysis",
+        "prompts": [
+            "Transcribe any lyrics you can make out.",
+            "Describe the vocal processing — autotune, reverb, delay, compression, distortion.",
+            "What vocal technique is being used? Belting, falsetto, talk-singing, screaming?",
+            "Is this one vocalist or multiple? How are they layered?",
+            "Describe the emotional delivery of the vocals.",
+        ],
+    },
+    "mood-atmosphere": {
+        "name": "Mood & Atmosphere",
+        "prompts": [
+            "Describe the emotional landscape of this track in three words, then explain.",
+            "What would you be doing if this was playing? Set the scene.",
+            "Does this track feel nostalgic, futuristic, or outside of time? Why?",
+            "Map the energy arc — does it build, plateau, drop, or stay flat?",
+            "What color does this music make you think of? Why?",
+        ],
+    },
+    "rhythm-tempo": {
+        "name": "Rhythm & Tempo",
+        "prompts": [
+            "Estimate the BPM and time signature.",
+            "Describe the drum pattern — four-on-the-floor, breakbeat, half-time, swung?",
+            "Is there a groove or is the rhythm deliberately unstable?",
+            "Where does the rhythmic tension come from?",
+            "Compare this rhythm to [reference track/artist].",
+        ],
+    },
+    "comparison": {
+        "name": "Comparative & Reference",
+        "prompts": [
+            "What does this remind you of? Name specific artists and tracks.",
+            "How does this compare to [artist]'s typical sound?",
+            "If you had to file this next to one album in a record store, which one?",
+            "What's the closest mainstream equivalent to this underground track?",
+            "Who are the 3 artists that most influenced this sound?",
+        ],
+    },
+    "musicology": {
+        "name": "Musicology & Theory",
+        "prompts": [
+            "What key is this in? Major, minor, or modal?",
+            "Describe the harmonic movement — is it static, cyclical, or progressive?",
+            "What's the song structure? Intro-verse-chorus or something less conventional?",
+            "Identify any samples, interpolations, or references you recognize.",
+            "What's the most interesting musical choice in this clip?",
+        ],
+    },
+    "a-b-diagnostic": {
+        "name": "A/B Testing & Diagnostic",
+        "prompts": [
+            "Analyze this 30-second clip for genre, instruments, production, and mood. Be as specific as possible about subgenres and production techniques.",
+            "Listen carefully and describe what you hear — focus on details that would distinguish this from similar-sounding tracks.",
+            "What would a music critic write about this track? Be honest about both strengths and derivativeness.",
+            "What's the single most distinctive element in this clip?",
+            "If this were playing at a party, who would ask 'what is this' and who would leave the room?",
+        ],
+    },
+}
+
+
+@mcp.resource("gemma4-audio://prompts")
+def get_prompt_catalog() -> str:
+    """Full catalog of suggested prompts organized by category."""
+    lines = ["# Suggested Prompts for Audio Analysis", ""]
+    for key, cat in PROMPT_CATEGORIES.items():
+        lines.append(f"## {cat['name']} (`{key}`)")
+        lines.append("")
+        for p in cat["prompts"]:
+            lines.append(f"- {p}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.resource("gemma4-audio://prompts/{category}")
+def get_prompts_by_category(category: str) -> str:
+    """Get suggested prompts for a specific analysis category."""
+    cat = PROMPT_CATEGORIES.get(category)
+    if not cat:
+        available = ", ".join(sorted(PROMPT_CATEGORIES.keys()))
+        return f"Unknown category '{category}'. Available: {available}"
+    lines = [f"# {cat['name']}", ""]
+    for i, p in enumerate(cat["prompts"], 1):
+        lines.append(f"{i}. {p}")
+    return "\n".join(lines)
+
+
+@mcp.resource("gemma4-audio://backends")
+def get_backend_info() -> str:
+    """Info about available backends and when to use each."""
+    return """# Audio Analysis Backends
+
+## swiftlm (default, recommended)
+- **Model**: Gemma 4 E4B BF16 (local, ~20 GB GPU)
+- **Speed**: ~5.5 tok/s generation, ~55s for 30s clip + 300 tokens
+- **Audio**: Real — Conformer encoder + mel spectrogram (750 tokens/30s)
+- **Best for**: Local inference, privacy, no API dependency
+- **Weakness**: Dense layered tracks (wall of sound, heavy saturation) can be misclassified
+- **Tip**: Add genre hints in the prompt for dense material (e.g., "This is hyperpop territory")
+
+## gemini-flash
+- **Model**: Gemini 3.5 Flash (cloud, with 10k-token thinking budget)
+- **Speed**: ~2-5s response
+- **Audio**: Real — full native audio pipeline
+- **Best for**: Dense/complex tracks, BPM estimation, lyric transcription, subgenre precision
+- **Weakness**: Requires API key, cloud dependency
+- **Requires**: `GEMMA4_AUDIO_GOOGLE_API_KEY` or `GOOGLE_API_KEY`
+
+## gemma4-cloud
+- **Model**: Gemini 3.5 Flash (cloud, alias for gemini-flash)
+- Same capabilities as gemini-flash
+
+## google
+- **Model**: Any AI Studio model (specify via `model` param)
+- **Speed**: Varies
+- **Audio**: Depends on model — Gemini models yes, Gemma 4 models NO (text+vision only on API)
+- **Best for**: Custom model selection, native audio output models
+- **Requires**: `GOOGLE_API_KEY`
+
+## omlx-stt
+- **Model**: Whisper/Qwen3-ASR (requires STT model loaded on oMLX)
+- **Speed**: Fast
+- **Audio**: Transcription only — no understanding, no analysis
+- **Best for**: Speech-to-text when you don't need analysis
+
+## openai
+- **Model**: Any OpenAI-compatible endpoint
+- **Speed**: Fast
+- **Audio**: NONE — can only see file metadata (format, size, duration)
+- **Best for**: Fallback only
+"""
+
+
 # --- Entry -------------------------------------------------------------------
 
 def main():
