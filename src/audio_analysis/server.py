@@ -73,12 +73,35 @@ OPENAI_BASE_URL = os.environ.get(
 def _get_omlx_key():
     return os.environ.get("AUDIO_ANALYSIS_OMLX_API_KEY", "donthackme")
 
-def _get_google_key():
-    # Try prefixed var first (avoids security masking), then standard
-    val = os.environ.get("AUDIO_ANALYSIS_GOOGLE_API_KEY", "")
-    if val:
-        return val
-    return os.environ.get("GOOGLE_API_KEY", "")
+
+# Google API key rotation — comma-separated keys in GOOGLE_API_KEYS or
+# individual GOOGLE_API_KEY / AUDIO_ANALYSIS_GOOGLE_API_KEY.
+# Round-robin on 429s.
+_google_key_idx = 0
+
+def _get_google_keys() -> list[str]:
+    """Load all available Google API keys for rotation."""
+    keys: list[str] = []
+    # Comma-separated rotation list
+    multi = os.environ.get("GOOGLE_API_KEYS", "")
+    if multi:
+        keys.extend(k.strip() for k in multi.split(",") if k.strip())
+    # Single keys as fallback
+    for var in ("AUDIO_ANALYSIS_GOOGLE_API_KEY", "GOOGLE_API_KEY"):
+        val = os.environ.get(var, "")
+        if val and val not in keys:
+            keys.append(val)
+    return keys
+
+def _get_google_key() -> str:
+    global _google_key_idx
+    keys = _get_google_keys()
+    if not keys:
+        return ""
+    # Round-robin
+    key = keys[_google_key_idx % len(keys)]
+    _google_key_idx = (_google_key_idx + 1) % len(keys)
+    return key
 
 # ------------------------------------------------------------------------------
 
@@ -206,19 +229,19 @@ def _parse_cli_output(stdout: str) -> str:
 # --- Backend: Google AI Studio (Gemini, Gemma 4, any multimodal model) -------
 
 async def _analyze_google(clip_path: str, prompt: str, model: str) -> str:
-    """Analyze audio via Google AI Studio.
+    """Analyze audio via Google AI Studio with automatic key rotation on 429.
 
     Supports all models with audio capability:
       - gemini-3.5-flash (with thinking — best accuracy)
-      - gemma-4-31b-it, gemma-4-26b-a4b-it (text+vision only, no audio on API)
       - gemini-2.5-flash-native-audio-latest (native audio output)
     """
     from google import genai
     from google.genai import types
+    from google.genai.errors import ClientError
 
-    key = _get_google_key()
-    if not key:
-        raise ValueError("GOOGLE_API_KEY or AUDIO_ANALYSIS_GOOGLE_API_KEY env var required for google/gemini backends")
+    keys = _get_google_keys()
+    if not keys:
+        raise ValueError("GOOGLE_API_KEYS or GOOGLE_API_KEY env var required for google/gemini backends")
 
     audio_bytes = Path(clip_path).read_bytes()
     ext = Path(clip_path).suffix.lower()
@@ -228,26 +251,45 @@ async def _analyze_google(clip_path: str, prompt: str, model: str) -> str:
     }
     mime = mime_map.get(ext, "audio/wav")
 
-    def _call() -> str:
-        client = genai.Client(api_key=key)
+    # Try each key, cycling on 429 rate limits
+    last_err = None
+    for attempt, key in enumerate(keys):
+        def _call(_key=key) -> str:
+            client = genai.Client(api_key=_key)
+            config = types.GenerateContentConfig()
+            if "gemini" in model.lower():
+                config.thinking_config = types.ThinkingConfig(thinking_budget=10000)
+            response = client.models.generate_content(
+                model=model,
+                contents=[
+                    types.Content(role="user", parts=[
+                        types.Part(inline_data=types.Blob(mime_type=mime, data=audio_bytes)),
+                        types.Part(text=prompt),
+                    ]),
+                ],
+                config=config,
+            )
+            return response.text or ""
 
-        config = types.GenerateContentConfig()
-        if "gemini" in model.lower():
-            config.thinking_config = types.ThinkingConfig(thinking_budget=10000)
+        try:
+            return await asyncio.to_thread(_call)
+        except ClientError as exc:
+            last_err = exc
+            if "429" in str(exc) and attempt < len(keys) - 1:
+                # Rate limited — try next key
+                continue
+            if "429" in str(exc):
+                # All keys exhausted — parse retry delay and wait
+                import re as _re
+                delay_match = _re.search(r"retry.*?(\d+)s", str(exc), _re.IGNORECASE)
+                delay = int(delay_match.group(1)) + 2 if delay_match else 60
+                raise RuntimeError(
+                    f"All {len(keys)} Google API keys rate-limited. Retry after {delay}s. "
+                    f"Add more keys via GOOGLE_API_KEYS env var (comma-separated)."
+                ) from exc
+            raise
 
-        response = client.models.generate_content(
-            model=model,
-            contents=[
-                types.Content(role="user", parts=[
-                    types.Part(inline_data=types.Blob(mime_type=mime, data=audio_bytes)),
-                    types.Part(text=prompt),
-                ]),
-            ],
-            config=config,
-        )
-        return response.text or ""
-
-    return await asyncio.to_thread(_call)
+    raise last_err  # type: ignore[misc]
 
 
 # --- Backend: oMLX STT (transcription only) ----------------------------------
