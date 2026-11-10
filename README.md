@@ -1,3 +1,5 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/gwyntel/audio-analysis-mcp)
+
 # audio-analysis-mcp
 
 MCP server for audio analysis. Split audio into clips via FFmpeg, analyze with local or cloud AI models.
